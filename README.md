@@ -20,7 +20,7 @@ Or run it as a menu bar app:
 lantern-menubar
 ```
 
-First run of `lantern screen`/`lantern camera` triggers macOS's one-time permission prompts (Screen Recording, Camera) -- grant them once, they stick.
+First run of `lantern screen`/`lantern camera` triggers macOS's one-time permission prompts (Screen Recording, Camera) -- grant them once, they stick. `lantern camera` briefly lights up the camera indicator for each capture, same as any app taking a photo.
 
 Requires macOS 26+, Apple Silicon.
 
@@ -57,7 +57,6 @@ Median 7.55s, range 4.18-8.06s for non-blank images. Reproduce with `python3 scr
 
 - Native image-input backend isn't implemented yet -- see the table above. Tracked, not silently dropped.
 - Vision's OCR/classification is deliberately narrow (text + scene labels) rather than open-ended visual understanding -- it can't answer "what's weird about this photo," only describe what it detected.
-- Camera capture (`capture.py`) is written against AVFoundation but needs a live camera + one-time permission grant to exercise -- covered by manual testing (`lantern camera`), not the automated test suite (see `tests/test_capture.py`'s docstring).
 - ~7-8s latency per description is real and measured, not hidden -- fine for "describe this" on demand, not yet fast enough for continuous narration.
 
 ## License

@@ -1,13 +1,14 @@
-"""Real (no-mock) tests for capture.py's screen capture path.
+"""Real (no-mock) tests for capture.py -- both screen and camera.
 
-Camera capture isn't tested here -- it needs a physical camera and an
-interactive one-time permission grant (System Settings > Privacy & Security
-> Camera) that can't be driven from an automated test run. It's exercised
-manually via `lantern camera` instead; see README's testing section."""
+Camera capture needs the Camera permission already granted to whatever
+terminal/process runs this suite (macOS's one-time prompt, granted once via
+System Settings > Privacy & Security > Camera, sticks per-app after that).
+Skips itself if that permission hasn't been granted yet rather than hanging
+on a prompt nothing here can click through."""
 
 import os
 
-from lantern.capture import capture_screen
+from lantern.capture import capture_camera, capture_screen
 
 
 def test_capture_screen_produces_real_image():
@@ -20,5 +21,21 @@ def test_capture_screen_produces_real_image():
         # Real PNG magic bytes -- confirms this is an actual image file,
         # not just an empty/placeholder path.
         assert header[:4] == b"\x89PNG"
+    finally:
+        os.remove(path)
+
+
+def test_capture_camera_produces_real_image():
+    # Briefly lights up the camera indicator, same as any app taking a
+    # photo -- real capture, not a mock, matching this repo's test
+    # philosophy throughout.
+    path = capture_camera()
+    try:
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
+        with open(path, "rb") as f:
+            header = f.read(3)
+        # Real JPEG magic bytes.
+        assert header == b"\xff\xd8\xff"
     finally:
         os.remove(path)

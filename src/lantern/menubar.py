@@ -4,6 +4,8 @@ plain functions, no extra indirection" pattern)."""
 
 from __future__ import annotations
 
+import os
+
 import rumps
 
 from lantern.backends import active_backend_name, get_backend
@@ -30,8 +32,14 @@ class LanternApp(rumps.App):
             rumps.notification("lantern", "Capture failed", str(e))
             return
 
-        backend = get_backend()
-        description = backend.describe(image_path)
+        try:
+            backend = get_backend()
+            description = backend.describe(image_path)
+        finally:
+            # Same reasoning as cli.py: nothing captured should outlive its
+            # own description, on disk, on every single run.
+            os.remove(image_path)
+
         rumps.notification(f"lantern ({active_backend_name()})", "", description)
         speak(description)
 

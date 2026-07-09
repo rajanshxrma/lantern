@@ -3,14 +3,14 @@
 Two backends, chosen automatically at runtime, not configured by hand:
 
 - "native": Apple's on-device Foundation Model given the image directly, via
-  the image-input surface previewed at WWDC26. Only exists on a beta OS/SDK
-  (verified: the stable macOS 26.6 / Xcode 26.6 FoundationModels interface
-  has zero image-bearing symbols -- CoreGraphics is imported but nothing in
-  it is actually used). NativeImageBackend probes for the real API at call
-  time rather than gating on an OS-version check, since beta point releases
-  can change a symbol's shape between releases -- a version check would
-  either false-negative on a beta that has it, or false-positive on one that
-  changed the signature underneath it.
+  FoundationModels.Attachment<ImageAttachmentContent> (macOS 27 beta only --
+  verified directly against the beta SDK's real .swiftinterface, not assumed
+  from the WWDC26 preview description; see native/Sources/.../main.swift).
+  This is a pure-Swift API surface (generics, protocols) that PyObjC cannot
+  bridge at all -- verified directly too: `import FoundationModels` fails
+  under PyObjC even with the beta installed. So NativeImageBackend shells
+  out to a small compiled Swift helper (native/), the same pattern already
+  used for /usr/sbin/screencapture in capture.py, rather than a PyObjC call.
 - "vision": Apple's Vision framework (stable, mature, shipped for years) for
   OCR (VNRecognizeTextRequest) and scene/object classification
   (VNClassifyImageRequest), with the extracted text/labels handed to the
@@ -21,10 +21,26 @@ Two backends, chosen automatically at runtime, not configured by hand:
 get_backend() always tries native first and falls back to vision -- never
 raises for "no native backend", since not having the beta is the normal
 case, not an error.
+
+A third real finding, beyond "beta or not installed": even with the beta SDK
+installed and the helper compiled successfully against it, the *compiled*
+binary can still fail at *runtime* with a dyld "Symbol not found" error if
+the installed OS beta build doesn't exactly match the Xcode-beta build it
+was compiled against (observed directly: Xcode-beta 27A5209h's SDK declared
+`Attachment.init(imageURL:orientation:)`, but the installed OS beta's actual
+`/System/Library/Frameworks/FoundationModels.framework` didn't yet export
+that symbol at runtime -- a real Xcode-beta/OS-beta version skew, not a bug
+in this code). `_probe_native()` therefore does a real subprocess smoke-test
+of the compiled binary, not just a file-existence check -- a dyld symbol
+failure exits 134 immediately (before main() runs) regardless of arguments,
+which is a fast, reliable, distinguishable signal from a clean "no such
+image" failure (exit 2) that proves the binary actually loaded and ran.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 from functools import lru_cache
 from typing import Protocol
 
@@ -48,27 +64,49 @@ _NARRATION_INSTRUCTIONS = (
 )
 
 
-class NativeImageBackend:
-    """Feeds the image directly to Apple's on-device model.
+_NATIVE_INSTRUCTIONS = (
+    "You describe images for a low-vision user, out loud. You are given the "
+    "actual image directly. Report only what is genuinely visible -- do not "
+    "guess at things outside the frame, do not invent plausible-sounding "
+    "detail you're not confident about. One or two plain sentences, present "
+    "tense, no hedging, no meta-commentary about being an AI."
+)
 
-    Only constructible if the real API is present -- see `_probe_native()`.
-    Left unimplemented in detail until the beta SDK's actual API shape is
-    verified directly (the same way the stable SDK's *absence* of it was
-    verified) rather than written against the ideas doc's description of
-    what WWDC26 previewed, which is not the same thing as what a beta build
-    actually ships.
-    """
+
+def _native_binary_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "native", "bin", "lantern-native-describe")
+
+
+class NativeBackendUnavailableError(RuntimeError):
+    """Raised if NativeImageBackend is constructed without the native
+    helper actually being usable -- callers should check _probe_native()
+    (which get_backend() already does) before constructing this directly."""
+
+
+class NativeImageBackend:
+    """Feeds the image directly to Apple's on-device model via the compiled
+    Swift helper in native/ -- see this module's docstring for why a
+    subprocess rather than a PyObjC call."""
 
     def __init__(self):
-        raise NotImplementedError(
-            "NativeImageBackend is not implemented yet -- pending direct "
-            "verification of the real image-input API against an installed "
-            "beta SDK. See backends.py module docstring and the project "
-            "README's status section."
-        )
+        if not _probe_native():
+            raise NativeBackendUnavailableError(
+                "Native image backend isn't usable on this machine right now "
+                "-- see backends.py module docstring for the real reasons "
+                "this can happen (no beta SDK, or a beta OS/SDK version skew)."
+            )
 
-    def describe(self, image_path: str) -> str:  # pragma: no cover
-        raise NotImplementedError
+    def describe(self, image_path: str) -> str:
+        result = subprocess.run(
+            [_native_binary_path(), image_path],
+            input=_NATIVE_INSTRUCTIONS,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Native backend failed: {result.stderr.strip()}")
+        return result.stdout.strip()
 
 
 class VisionOCRBackend:
@@ -138,21 +176,33 @@ class VisionOCRBackend:
         return result.content
 
 
+@lru_cache(maxsize=None)
 def _probe_native() -> bool:
-    """True only if the real native image-input surface is actually present.
-
-    Deliberately a runtime probe (import + attribute check), not an OS
-    version check -- see NativeImageBackend's docstring for why."""
-    try:
-        import FoundationModels  # noqa: F401
-    except ImportError:
+    """True only if the compiled native helper actually runs on this
+    machine right now -- a real subprocess smoke-test, not just a file-
+    existence check. See module docstring for why existence alone isn't
+    enough (the Xcode-beta/OS-beta version-skew finding). Cached: this
+    process's dyld-loadability of the binary doesn't change mid-run, so
+    there's no reason to pay the subprocess cost more than once."""
+    binary = _native_binary_path()
+    if not os.path.exists(binary):
         return False
-    # Placeholder condition -- always False until NativeImageBackend is
-    # actually implemented against a verified beta API (task: verify beta
-    # SDK). Left as an explicit, named check rather than a bare `return
-    # False` so it's obvious this is the one line to change once that
-    # verification happens.
-    return False
+    try:
+        # A nonexistent image path is deliberate -- cheapest possible real
+        # invocation. A binary that's actually dyld-loadable reaches our
+        # own "file not found" check and exits 2; a version-skewed binary
+        # dies in dyld before main() ever runs, exit 134, regardless of
+        # arguments -- see module docstring.
+        result = subprocess.run(
+            [binary, "/__lantern_native_probe__"],
+            input=_NATIVE_INSTRUCTIONS,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 2
 
 
 @lru_cache(maxsize=None)
@@ -162,7 +212,7 @@ def _cached_vision_backend() -> VisionOCRBackend:
 
 def get_backend() -> Backend:
     if _probe_native():
-        return NativeImageBackend()  # pragma: no cover -- unreachable until implemented
+        return NativeImageBackend()
     return _cached_vision_backend()
 
 

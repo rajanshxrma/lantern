@@ -8,3 +8,5 @@ venv/
 build/
 dist/
 .DS_Store
+native/.build/
+native/bin/

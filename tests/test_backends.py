@@ -2,6 +2,8 @@
 calls and the actual on-device model, matching private-agent/orchard's own
 "no mocks" test philosophy."""
 
+import pytest
+
 
 def test_vision_backend_reads_real_text(text_image_path):
     from lantern.backends import VisionOCRBackend
@@ -49,12 +51,15 @@ def test_describe_handles_nothing_recognizable(blank_image_path):
 
 
 def test_active_backend_name_reflects_reality():
-    from lantern.backends import active_backend_name
+    from lantern.backends import _probe_native, active_backend_name
 
-    # NativeImageBackend is intentionally unimplemented (see backends.py) --
-    # this must report "vision" honestly, never claim "native" for a path
-    # that doesn't actually work yet.
-    assert active_backend_name() == "vision"
+    # Not hardcoded to "vision" -- active_backend_name() must report
+    # whichever backend _probe_native() actually finds usable right now.
+    # On most machines (no beta, or a beta/OS version skew -- see
+    # backends.py module docstring) that's "vision"; on a machine where the
+    # native helper genuinely works it should honestly say "native".
+    expected = "native" if _probe_native() else "vision"
+    assert active_backend_name() == expected
 
 
 def test_get_backend_returns_working_backend():
@@ -62,3 +67,28 @@ def test_get_backend_returns_working_backend():
 
     backend = get_backend()
     assert hasattr(backend, "describe")
+
+
+def test_native_backend_raises_clear_error_when_unavailable():
+    from lantern.backends import NativeBackendUnavailableError, NativeImageBackend, _probe_native
+
+    if _probe_native():
+        pytest.skip("Native backend is actually available on this machine -- nothing to test here.")
+    with pytest.raises(NativeBackendUnavailableError):
+        NativeImageBackend()
+
+
+def test_native_backend_describes_real_image(text_image_path):
+    """Real (no-mock) end-to-end test of the native path -- only runs on a
+    machine where the beta SDK/OS pairing actually works, since that's a
+    real environmental precondition this repo can't fake or bypass. See
+    backends.py module docstring for the Xcode-beta/OS-beta version-skew
+    finding that makes this conditional necessary."""
+    from lantern.backends import NativeImageBackend, _probe_native
+
+    if not _probe_native():
+        pytest.skip("Native backend not usable on this machine right now -- see backends.py docstring.")
+
+    backend = NativeImageBackend()
+    description = backend.describe(text_image_path)
+    assert len(description) > 0

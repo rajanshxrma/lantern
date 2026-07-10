@@ -1,5 +1,7 @@
 # lantern
 
+> ⤴ This project's next chapter is **[Keep](https://github.com/rajanshxrma/keep)** -- one app that does this plus semantic search over your files and calendar/reminders/mail. This repo remains the standalone original and still works; it will be archived once Keep reaches full parity.
+
 An on-device accessibility agent for macOS. Describes what's on your screen or in front of your camera, out loud -- entirely offline.
 
 ![demo](assets/demo.gif)

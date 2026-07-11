@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lantern"
-version = "0.2.0"
+version = "0.2.1"
 description = "An on-device accessibility agent for macOS -- describes what's on screen or in front of the camera, out loud, entirely offline"
 readme = "README.md"
 license = { text = "MIT" }

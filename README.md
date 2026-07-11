@@ -30,11 +30,11 @@ Requires macOS 26+, Apple Silicon.
 
 Two backends, chosen automatically -- never configured by hand:
 
-| | Native | Vision (what you actually get today) |
+| | Native | Vision (the fallback every machine gets) |
 |---|---|---|
-| **Requires** | macOS 27 beta + a compiled Swift helper (`native/`) built against the beta SDK -- see below | Nothing beyond stable macOS 26+ |
+| **Requires** | macOS 27 beta + a compiled Swift helper (`native/`) built against a matching beta SDK -- see below | Nothing beyond stable macOS 26+ |
 | **How it sees** | `FoundationModels.Attachment<ImageAttachmentContent>` -- the model reasons over the actual image directly, verified against the real beta SDK's `.swiftinterface` (not the WWDC26 preview description) | `VNRecognizeTextRequest` (OCR) + `VNClassifyImageRequest` (scene/object labels) extract structured data; the on-device model narrates *only* from that -- it never sees pixels |
-| **Status** | Implemented and real -- but its runtime availability depends on the exact machine (see the version-skew finding below); when unavailable, falls back automatically | Fully working, tested, benchmarked below. What every clone of this repo actually gets. |
+| **Status** | Working end-to-end and benchmarked below (verified on macOS 27 beta 3 with Xcode 27 beta 3, build `27A5218g`) -- roughly 2x faster than the vision path, and the model sees real pixels. Falls back automatically on machines where the helper isn't usable. | Fully working, tested, benchmarked below. What a stable-macOS clone of this repo actually gets. |
 
 `get_backend()` probes for native at runtime with a real subprocess smoke-test (not a version check or file-existence check) and falls back automatically -- this repo runs and demos correctly on stable macOS whether or not native is actually usable on the machine running it, and picking up native support later is a change to one backend, not a rewrite.
 
@@ -46,15 +46,30 @@ cd native && ./build.sh
 
 FoundationModels' image-input surface is pure Swift (generics, protocols) -- verified directly that PyObjC cannot bridge it at all (`import FoundationModels` fails under PyObjC even with the beta installed). So the native path is a small standalone compiled Swift executable (`native/`), invoked via subprocess, the same pattern this repo already uses for `/usr/sbin/screencapture` in `capture.py` -- not a PyObjC call.
 
-## Three real findings during testing (all fixed or honestly documented)
+## Four real findings during testing (all fixed or honestly documented)
 
-**A real Xcode-beta/OS-beta version skew (native backend, not a bug in this code).** The native Swift helper compiles cleanly against Xcode-beta's SDK (which declares `Attachment.init(imageURL:orientation:)`), but on this machine it crashes at *runtime* with a dyld `Symbol not found` error -- the installed OS beta build (`26A5378j`) doesn't precisely match the Xcode-beta build (`27A5209h`) it was compiled against, so the OS's actual `/System/Library/Frameworks/FoundationModels.framework` doesn't yet export a symbol its own paired SDK headers declare. This is exactly the risk the dual-pipeline architecture (native primary, Vision-OCR automatic fallback) was built to absorb -- `_probe_native()` does a real subprocess smoke-test (not a file-existence or version check) so this is detected and falls back cleanly, with zero code changes needed once a matching OS update closes the gap. Confirmed the fallback works correctly: `active_backend_name()` honestly reports `"vision"` on this machine right now.
+**A real Xcode-beta/OS-beta version skew (native backend, not a bug in this code) -- since resolved.** The native Swift helper compiled cleanly against Xcode 27 beta 2's SDK (which declares `Attachment.init(imageURL:orientation:)`), but crashed at *runtime* with a dyld `Symbol not found` error: the installed OS beta build (`26A5378j`) exports that same initializer under a *different mangled symbol name* than the beta 2 SDK (`27A5209h`) declared -- confirmed by diffing the binary's undefined symbol against `dyld_info -exports` on the OS's own `/System/Library/Frameworks/FoundationModels.framework`. This is exactly the risk the dual-pipeline architecture (native primary, Vision-OCR automatic fallback) was built to absorb -- `_probe_native()` does a real subprocess smoke-test (not a file-existence or version check), so the crash was detected and lantern fell back cleanly. Resolved as predicted, with zero Python changes: rebuilding the helper against the matching Xcode 27 beta 3 SDK (`27A5218g`) bound the corrected symbol, and the probe promoted the machine to native automatically.
+
+**A latent main-actor deadlock in the native helper, unreachable until the skew was fixed.** The helper originally awaited generation inside `Task { ... }` and blocked on a `DispatchSemaphore` -- but Swift top-level code runs on the main actor, so the `Task` inherited `@MainActor` and could never start while `semaphore.wait()` held the main thread: a guaranteed hang on every real invocation. The dyld crash above masked it completely -- the binary died at load, so the deadlocked path never executed until the beta 3 rebuild made the binary loadable, at which point the first-ever real native run hung instead of answering (caught by the end-to-end test's subprocess timeout). Fixed by deleting the semaphore scaffolding in favor of top-level `await` (SE-0343), which is what the code should have been from the start. A reminder that "compiles and crashes for an unrelated reason" is not evidence the code past the crash is correct.
 
 **Narration hallucination.** Early testing found the narration step inventing plausible-sounding but entirely fictional detail: given an image containing only the word "CALENDAR" on a blank background, the model's first-draft narration was *"a calendar with multiple months visible, with dates present on each month page"* -- a fully invented scene. Vision's own extraction was correct (just the text "CALENDAR", no scene labels); the hallucination was purely in the narration prompt letting the model fill in a plausible-sounding scene from one evocative word. This matters more here than in a general chatbot: someone using this *can't see the image themselves* to catch the error. Fixed by rewriting the narration instructions to explicitly forbid adding anything not in Vision's actual extracted output. Re-verified: the same input now correctly narrates only *"CALENDAR is visible in the image."* See `backends.py`'s `_NARRATION_INSTRUCTIONS` for the real prompt.
 
 **Captured frames outliving their purpose.** `capture_screen()`/`capture_camera()` write the captured frame to a temp file and return its path -- but neither `cli.py` nor `menubar.py` originally deleted that file after describing it, meaning every real run of `lantern camera` left an actual photo of the user sitting in `/tmp` indefinitely. For a tool whose entire premise is "nothing leaves the machine," leaving captured images lying around on the machine indefinitely is its own kind of privacy failure. Fixed: both entrypoints now delete the captured file in a `finally` block immediately after describing it, so a capture never outlives its own description -- see `cli.py`/`menubar.py`.
 
-## Benchmarks (measured, this machine, vision backend -- native isn't usable on this machine right now, see the version-skew finding above)
+## Benchmarks (measured, this machine, both backends)
+
+Native (macOS 27 beta 3, helper built with Xcode 27 beta 3):
+
+| Case | Latency | Recognized correctly |
+|---|---|---|
+| Single word | 5.20s | Yes |
+| Short phrase | 3.10s | Yes |
+| Longer line | 3.50s | Yes |
+| Blank image | 2.87s | N/A (correctly reports a blank image, invents nothing) |
+
+Median 3.50s, range 3.10-5.20s for non-blank images.
+
+Vision (measured earlier on the same machine, stable macOS path):
 
 | Case | Latency | Recognized correctly |
 |---|---|---|
@@ -63,13 +78,13 @@ FoundationModels' image-input surface is pure Swift (generics, protocols) -- ver
 | Longer line | 4.18s | Yes |
 | Blank image | 0.06s | N/A (correctly reports nothing recognizable) |
 
-Median 7.55s, range 4.18-8.06s for non-blank images. Reproduce with `python3 scripts/eval_lantern.py`.
+Median 7.55s, range 4.18-8.06s for non-blank images. The blank-image asymmetry is honest and structural: vision short-circuits before ever calling the model when nothing was extracted, while native always makes a real model call. Reproduce either with `python3 scripts/eval_lantern.py` -- it measures whichever backend is active on your machine and says which one it measured.
 
 ## Limitations
 
-- Native backend's real-world availability depends on the exact beta build pairing on your machine -- see the version-skew finding above. Not a limitation of the code; a limitation of running on pre-release software.
+- The native backend needs the OS beta and the SDK the helper was built against to agree on FoundationModels' ABI -- the version-skew finding above is what disagreement looks like. Pre-release software behavior, not a code limitation; the probe-and-fallback design absorbs it either way.
 - Vision's OCR/classification is deliberately narrow (text + scene labels) rather than open-ended visual understanding -- it can't answer "what's weird about this photo," only describe what it detected.
-- ~7-8s latency per description is real and measured, not hidden -- fine for "describe this" on demand, not yet fast enough for continuous narration.
+- Latency is real and measured, not hidden (median 3.5s native, 7.5s vision) -- fine for "describe this" on demand, not yet fast enough for continuous narration.
 
 ## License
 

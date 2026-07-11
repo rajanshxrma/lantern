@@ -42,31 +42,22 @@ guard FileManager.default.fileExists(atPath: imagePath) else {
     fail("Image not found at \(imagePath)", code: 2)
 }
 
-let semaphore = DispatchSemaphore(value: 0)
-var narration: String?
-var failure: String?
-
-Task {
-    let attachment = FoundationModels.Attachment(imageURL: imageURL).label("photo")
-    let session = LanguageModelSession(model: model, instructions: instructions)
-    do {
-        // Prompt's variadic initializer is @usableFromInline, not public --
-        // only reachable through the @PromptBuilder closure form, which the
-        // compiler expands via the public PromptBuilder.buildBlock.
-        let response = try await session.respond {
-            attachment
-            "Describe what is shown."
-        }
-        narration = response.content
-    } catch {
-        failure = "Generation failed: \(error)"
+// Top-level await (SE-0343), NOT a Task + DispatchSemaphore pair: top-level
+// code runs on the main actor, so a Task {} here inherits @MainActor and a
+// semaphore.wait() on the main thread deadlocks it before it ever starts.
+// (Latent in the original semaphore version -- unreachable until the
+// beta-3 SDK rebuild fixed the dyld symbol skew, then hung every real run.)
+let attachment = FoundationModels.Attachment(imageURL: imageURL).label("photo")
+let session = LanguageModelSession(model: model, instructions: instructions)
+do {
+    // Prompt's variadic initializer is @usableFromInline, not public --
+    // only reachable through the @PromptBuilder closure form, which the
+    // compiler expands via the public PromptBuilder.buildBlock.
+    let response = try await session.respond {
+        attachment
+        "Describe what is shown."
     }
-    semaphore.signal()
+    print(response.content)
+} catch {
+    fail("Generation failed: \(error)", code: 4)
 }
-
-semaphore.wait()
-
-if let failure {
-    fail(failure, code: 4)
-}
-print(narration ?? "")

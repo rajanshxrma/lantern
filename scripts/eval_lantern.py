@@ -1,13 +1,12 @@
-"""Real evals for lantern: latency and narration accuracy for the vision
-backend, on a fixed set of generated test images -- no mocks, matching
-private-agent's own eval_agent.py discipline (real prompts/real model, real
-measured numbers, nothing invented for the README).
+"""Real evals for lantern: latency and narration accuracy on a fixed set of
+generated test images -- no mocks, matching private-agent's own
+eval_agent.py discipline (real prompts/real model, real measured numbers,
+nothing invented for the README).
 
-Native backend isn't included here -- it's unimplemented until the beta
-SDK's real image-input API is verified (see backends.py). This script
-reports "vision" results only and says so explicitly in its output, so a
-README table built from this never silently implies a native-path number
-that was never actually measured.
+Measures whichever backend is actually active on this machine (native when
+the compiled helper passes its probe, vision otherwise) and names it
+explicitly in every line of output, so a README table built from this never
+silently implies a number for a path that was never actually measured.
 
 Usage: python3 scripts/eval_lantern.py
 """
@@ -17,7 +16,7 @@ import time
 
 from PIL import Image, ImageDraw
 
-from lantern.backends import VisionOCRBackend, active_backend_name
+from lantern.backends import active_backend_name, get_backend
 
 # Fixed, deterministic test set -- regenerated each run rather than checked
 # into the repo as binary fixtures, so there's nothing stale to go out of
@@ -45,10 +44,8 @@ def _make_blank_image(path: str) -> str:
 def run() -> None:
     backend_name = active_backend_name()
     print(f"lantern eval -- backend: {backend_name}\n")
-    if backend_name != "vision":
-        print("(unexpected: native backend is unimplemented, this script assumes 'vision')")
 
-    backend = VisionOCRBackend()
+    backend = get_backend()
     latencies = []
     hits = 0
 

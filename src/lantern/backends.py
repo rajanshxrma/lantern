@@ -35,6 +35,11 @@ of the compiled binary, not just a file-existence check -- a dyld symbol
 failure exits 134 immediately (before main() runs) regardless of arguments,
 which is a fast, reliable, distinguishable signal from a clean "no such
 image" failure (exit 2) that proves the binary actually loaded and ran.
+
+The skew played out exactly as this design expected: rebuilding the helper
+against the matching Xcode 27 beta 3 SDK (27A5218g, on the macOS 27 beta 3
+OS) fixed the symbol binding and the probe promoted this machine to native
+automatically -- zero changes anywhere in this file.
 """
 
 from __future__ import annotations
